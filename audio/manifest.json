@@ -1,0 +1,16 @@
+{
+  "menu": "audio/menu.mp3",
+  "play": "audio/play.mp3",
+  "drought": "audio/drought.mp3",
+  "ambience": "audio/ambience.mp3",
+  "moo": "audio/moo.mp3",
+  "cluck": "audio/cluck.mp3",
+  "chop": "audio/chop.mp3",
+  "hoe": "audio/hoe.mp3",
+  "splash": "audio/splash.mp3",
+  "pour": "audio/pour.mp3",
+  "bucket": "audio/bucket.mp3",
+  "hammer": "audio/hammer.mp3",
+  "warn": "audio/warn.mp3",
+  "win": "audio/win.mp3"
+}
