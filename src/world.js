@@ -6,6 +6,25 @@ export const STOCKPILE = { c: 23, r: 20 };
 export const PLOT = { u0: 10, v0: 22, cols: 6, rows: 4 };
 export const POND = { u: 31, v: 12.5, ru: 4.4, rv: 3.6 };
 export const BUCKETS = { c: 8, r: 9 };
+export const WHEEL_NODE = { c: 34, r: 18 };
+export const PIPELINE = [
+  [32, 18],
+  [30, 18],
+  [28, 18],
+  [26, 18],
+  [24, 18],
+  [22, 18],
+  [20, 18],
+  [18, 18],
+];
+export const STORAGE_TILES = [
+  [14, 18],
+  [15, 18],
+  [16, 18],
+  [17, 18],
+];
+export const SEED_SACK = { c: 12, r: 21 };
+export const DEEP_WOOD = { c0: 1, r0: 1, c1: 13, r1: 15 };
 export const PADDOCK = { u0: 24, v0: 2, u1: 31, v1: 7 };
 export const CORN = { u0: 4, v0: 17, u1: 8, v1: 21 };
 export const STARTS = { ade: [20, 19], mei: [18, 20], eli: [22, 19] };
@@ -47,6 +66,24 @@ export const PATHS = [
 
 const WATER = 1;
 const BLOCKED = 2;
+let worldMode = 1;
+
+export function setWorldMode(mode) {
+  worldMode = mode === 2 ? 2 : 1;
+}
+
+export function currentWorldMode() {
+  return worldMode;
+}
+
+export function riverValue(u, v) {
+  if (v < 1.2 || v > 31.2) return 4;
+  return Math.abs(u - 36.5) / 1.55;
+}
+
+export function inRiver(c, r) {
+  return worldMode === 2 && inGrid(c, r) && riverValue(c + 0.5, r + 0.5) < 1;
+}
 
 export const grid = {
   kind: new Uint8Array(GRID * GRID),
@@ -110,13 +147,19 @@ function reserved(c, r) {
   if (Math.hypot(c - BUCKETS.c, r - BUCKETS.r) < 3) return true;
   if (Math.hypot(c - DRUM.c, r - DRUM.r) < 3) return true;
   if (Math.hypot(c - STOCKPILE.c, r - STOCKPILE.r) < 2) return true;
+  if (worldMode === 2) {
+    if (Math.hypot(c - WHEEL_NODE.c, r - WHEEL_NODE.r) < 1.2) return true;
+    if (PIPELINE.some(([pc, pr]) => pc === c && pr === r)) return true;
+    if (STORAGE_TILES.some(([pc, pr]) => pc === c && pr === r)) return true;
+    if (c === SEED_SACK.c && r === SEED_SACK.r) return true;
+  }
   return Object.values(STARTS).some(([sc, sr]) => Math.hypot(c - sc, r - sr) < 2.5);
 }
 
 export function buildWorld() {
   for (let r = 0; r < GRID; r += 1) {
     for (let c = 0; c < GRID; c += 1) {
-      const water = pondValue(c + 0.5, r + 0.5) < 1;
+      const water = pondValue(c + 0.5, r + 0.5) < 1 || (worldMode === 2 && riverValue(c + 0.5, r + 0.5) < 1);
       grid.kind[at(c, r)] = water ? WATER : 0;
       grid.blocked[at(c, r)] = water ? BLOCKED : 0;
     }
@@ -159,6 +202,24 @@ export function buildWorld() {
       if (reserved(c, r)) continue;
       if (edge < 2) {
         if (hash(c * 11, r * 7) > 0.32) addTree(c, r, false, 1.05);
+        continue;
+      }
+      if (worldMode === 2) {
+        const deep = c >= DEEP_WOOD.c0 && r >= DEEP_WOOD.r0 && c <= DEEP_WOOD.c1 && r <= DEEP_WOOD.r1;
+        if (!deep) {
+          if (hash(c * 3 + 1, r * 5 + 2) > 0.035) continue;
+          if (c + r > 30 && c + r < 48) continue;
+          if (trees.some((tree) => Math.abs(tree.c - c) + Math.abs(tree.r - r) < 3)) continue;
+          addTree(c, r, false, 0.92);
+          continue;
+        }
+        const gate = c >= 8 && c <= 11 && r >= 13;
+        if (gate) continue;
+        const thicket = c <= 2 || r <= 2 || c >= 12 || r >= 14;
+        const chance = thicket ? 0.8 : 0.84;
+        if (hash(c * 3 + 1, r * 5 + 2) > chance) continue;
+        if (trees.some((tree) => Math.abs(tree.c - c) + Math.abs(tree.r - r) < 2)) continue;
+        addTree(c, r, !thicket, thicket ? 1.2 : 1.08);
         continue;
       }
       const forest = Math.hypot((c - 31) / 5.5, (r - 23) / 4.5) < 1;
@@ -287,12 +348,13 @@ export function renderGround() {
         color = pick(FOREST, fbm(u * 0.5, v * 0.5) * 0.7 + grain * 0.3);
       } else {
         const pond = pondValue(u, v);
+        const wet = worldMode === 2 ? Math.min(pond, riverValue(u, v)) : pond;
         const path = pathValue(u, v);
-        if (pond < 1) {
-          const depth = Math.min(1, (1 - pond) * 2.4);
+        if (wet < 1) {
+          const depth = Math.min(1, (1 - wet) * 2.4);
           const ripple = Math.sin((u + v) * 5.5 + fbm(u * 2, v * 2) * 6) > 0.92 && grain > 0.4;
           color = ripple ? WATER_COLORS[3] : pick(WATER_COLORS.slice(0, 3), 1 - depth * 0.85 + grain * 0.12);
-        } else if (pond < 1.1) {
+        } else if (wet < 1.1) {
           color = grain > 0.5 ? [112, 92, 56] : [138, 116, 72];
         } else if (inPlot(u, v)) {
           const fu = u - Math.floor(u);
