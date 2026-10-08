@@ -7,6 +7,7 @@ import * as A from "./audio.js";
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const STARS_KEY = "greenfield-stars";
+const STARS2_KEY = "greenfield-stars-2";
 const SCORE_KEY = "greenfield-score";
 const ZOOM = { min: 0.55, max: 2.2 };
 
@@ -22,7 +23,9 @@ const app = {
   keys: new Set(),
   toast: { text: "", t: 0 },
   best: Number(localStorage.getItem(STARS_KEY)) || 0,
+  best2: Number(localStorage.getItem(STARS2_KEY)) || 0,
   bestScore: Number(localStorage.getItem(SCORE_KEY)) || 0,
+  unlocked: G.unlockedMax(),
   levels: { music: A.audioLevel("music"), sfx: A.audioLevel("sfx") },
   audioPanel: false,
   lastKey: { key: "", t: 0 },
@@ -79,9 +82,9 @@ function project(point) {
   return { x: (point.x - app.camera.x) * app.camera.zoom, y: (point.y - app.camera.y) * app.camera.zoom };
 }
 
-function startLevel() {
-  G.resetLevel();
-  app.camera.zoom = 1.15;
+function startLevel(id = 1) {
+  G.resetLevel(id);
+  app.camera.zoom = id === 2 ? 1.05 : 1.15;
   const start = toWorld(19.5, 18.5);
   focus(start.x, start.y);
   app.tool = "hand";
@@ -101,12 +104,12 @@ function runAction(action) {
   if (!action) return false;
   if (action === "absorb") return true;
   if (action === "locked") toast("Locked. Finish level 1 first.");
-  if (action === "intro") startLevel();
+  if (action === "intro" || action.startsWith("intro:")) startLevel(action.startsWith("intro:") ? Number(action.slice(6)) || 1 : 1);
   if (action === "start") app.screen = "play";
   if (action === "pause") app.screen = "paused";
   if (action === "resume") app.screen = "play";
   if (action === "restart" || action === "replay") {
-    startLevel();
+    startLevel(G.level.id || 1);
     app.screen = "play";
   }
   if (action === "levels") {
@@ -142,6 +145,10 @@ function refreshHover() {
   const unit = G.unitAt(world.x, world.y);
   if (unit) {
     app.hoverUnit = unit;
+    const others = G.selectedUnits().filter((entry) => entry.id !== unit.id);
+    if (others.length && G.canHelp(unit)) {
+      app.hover = { target: { type: "help", leader: unit }, label: `Help ${unit.name}`, ok: true };
+    }
     canvas.style.cursor = "pointer";
     return;
   }
@@ -160,6 +167,11 @@ function clickWorld(point, shift) {
   const world = toWorldPoint(point);
   const unit = G.unitAt(world.x, world.y);
   if (unit) {
+    const others = G.selectedUnits().filter((entry) => entry.id !== unit.id);
+    if (!shift && others.length && G.canHelp(unit)) {
+      G.sendHelp(others, unit);
+      return;
+    }
     select(unit.id, shift);
     return;
   }
@@ -267,7 +279,7 @@ window.addEventListener("keydown", (event) => {
     else if (app.screen === "paused") app.screen = "play";
   }
   if (app.screen !== "play") return;
-  if (key === "1" || key === "2" || key === "3") select(G.CREW_ORDER[Number(key) - 1], event.shiftKey);
+  if (key === "1" || key === "2" || key === "3") select(G.crewOrder()[Number(key) - 1], event.shiftKey);
   if (key === "h") app.tool = "hand";
   if (key === "v") app.tool = "cursor";
   if (key === "+" || key === "=") zoomBy(1.15);
@@ -329,7 +341,13 @@ function frame(now) {
       if (G.level.status !== "play") {
         app.screen = G.level.status;
         if (G.level.status === "won") {
-          if (G.level.stars > app.best) {
+          app.unlocked = Math.max(app.unlocked, G.unlockedMax());
+          if (G.level.id === 2) {
+            if (G.level.stars > app.best2) {
+              app.best2 = G.level.stars;
+              localStorage.setItem(STARS2_KEY, String(app.best2));
+            }
+          } else if (G.level.stars > app.best) {
             app.best = G.level.stars;
             localStorage.setItem(STARS_KEY, String(app.best));
           }
@@ -361,6 +379,7 @@ async function boot() {
   await A.loadAudio();
   app.load = 1;
   G.resetLevel();
+  app.unlocked = G.unlockedMax();
   app.screen = "menu";
 }
 

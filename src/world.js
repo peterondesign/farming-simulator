@@ -232,14 +232,16 @@ export function buildWorld() {
       addTree(c, r, true);
     }
   }
-  [
-    [25, 19],
-    [26, 21],
-    [24, 18],
-    [27, 19],
-  ].forEach(([c, r]) => {
-    if (!trees.some((tree) => tree.c === c && tree.r === r)) addTree(c, r, true);
-  });
+  if (worldMode !== 2) {
+    [
+      [25, 19],
+      [26, 21],
+      [24, 18],
+      [27, 19],
+    ].forEach(([c, r]) => {
+      if (!trees.some((tree) => tree.c === c && tree.r === r)) addTree(c, r, true);
+    });
+  }
 
   const cells = [];
   for (let r = 0; r < PLOT.rows; r += 1) {

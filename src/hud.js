@@ -1,6 +1,6 @@
 import { VIEW, formatClock } from "./util.js";
 import { icon, images, parchment, roundedRect, text, woodPanel, wrap, drawSprite } from "./art.js";
-import { CREW, CREW_ORDER, DURATION, HINTS, equippedLabel, level, progress, taskLabel, builtCount, unit } from "./game.js";
+import { CREW, CREW_ORDER, DURATION, activeHints, crewOrder, equippedLabel, level, objectiveRows, taskLabel, builtCount, unit } from "./game.js";
 
 export const UI = {
   gear: { x: 1222, y: 14, w: 44, h: 44 },
@@ -21,11 +21,7 @@ export const UI = {
     { n: 5, x: 712, y: 236 },
     { n: 6, x: 600, y: 170 },
   ],
-  menuButtons: [
-    { id: "sound", label: "Sound", x: 462, y: 600, w: 112, h: 46 },
-    { id: "shop", label: "Shop", x: 584, y: 600, w: 112, h: 46 },
-    { id: "back", label: "Back", x: 706, y: 600, w: 112, h: 46 },
-  ],
+  menuButtons: [{ id: "sound", label: "Audio", x: 560, y: 600, w: 160, h: 46 }],
   start: { x: 540, y: 560, w: 200, h: 54 },
   resultButtons: [
     { id: "replay", label: "Play again", x: 470, y: 470, w: 160, h: 50 },
@@ -40,6 +36,15 @@ export const UI = {
 };
 
 const inside = (p, box) => p.x >= box.x && p.y >= box.y && p.x <= box.x + box.w && p.y <= box.y + box.h;
+
+function slots() {
+  return crewOrder().map((id, index) => ({ id, x: 14 + index * 58, y: 526, w: 52, h: 52 }));
+}
+
+function objectiveBox() {
+  const rows = level.id === 2 ? 4 : 3;
+  return { ...UI.objectives, h: 48 + rows * 34 };
+}
 
 const AUDIO = { x: 420, y: 210, w: 440, h: 290, trackX: 590, trackW: 210, rows: { music: 300, sfx: 370 } };
 const STEP_LABELS = ["Off", "Low", "Med", "High"];
@@ -89,9 +94,13 @@ export function hit(app, p) {
   if (app.audioPanel) return audioHit(p);
   if (app.screen === "menu") {
     const node = UI.levelNodes.find((entry) => Math.hypot(entry.x - p.x, entry.y - p.y) < 34);
-    if (node) return node.n === 1 ? "intro" : "locked";
+    if (node) {
+      if (node.n === 1) return "intro:1";
+      if (node.n === 2 && app.unlocked >= 2) return "intro:2";
+      return "locked";
+    }
     const menuButton = UI.menuButtons.find((button) => inside(p, button));
-    if (menuButton) return menuButton.id === "sound" ? "sound" : "locked";
+    if (menuButton) return menuButton.id;
     return null;
   }
   if (app.screen === "intro") return inside(p, UI.start) ? "start" : "absorb";
@@ -104,11 +113,11 @@ export function hit(app, p) {
     return button ? button.id : "absorb";
   }
   if (inside(p, UI.gear)) return "pause";
-  const slot = UI.slots.find((entry) => inside(p, entry));
+  const slot = slots().find((entry) => inside(p, entry));
   if (slot) return `select:${slot.id}`;
   const tool = UI.tools.find((entry) => inside(p, entry));
   if (tool) return `tool:${tool.id}`;
-  if (inside(p, UI.card) || inside(p, UI.objectives)) return "absorb";
+  if (inside(p, UI.card) || inside(p, objectiveBox())) return "absorb";
   return null;
 }
 
@@ -137,9 +146,9 @@ function drawResources(ctx) {
   icon(ctx, "wood", 28, 24, 30);
   text(ctx, String(level.wood), 64, 47, { size: 22, weight: 700 });
   icon(ctx, "drop", 118, 24, 30);
-  text(ctx, `${level.drum}/100`, 152, 47, { size: 22, weight: 700 });
+  text(ctx, level.id === 2 ? `${Math.round(level.reserve)}/100` : `${level.drum}/100`, 152, 47, { size: 22, weight: 700 });
   icon(ctx, "hammer", 238, 24, 30);
-  text(ctx, `${builtCount()}/${level.fence.length}`, 274, 47, { size: 22, weight: 700 });
+  text(ctx, level.id === 2 ? infraPieces() : `${builtCount()}/${level.fence.length}`, 274, 47, { size: 22, weight: 700 });
   woodPanel(ctx, 360, 14, 168, 50);
   text(ctx, "SCORE", 376, 32, { size: 13, color: "#f0b54a" });
   text(ctx, level.score.toLocaleString("en-US"), 376, 50, { size: 22, weight: 700 });
@@ -157,16 +166,17 @@ function drawTimer(ctx, time) {
   });
 }
 
+function infraPieces() {
+  const pipes = level.pipes?.length || 0;
+  const done = (level.wheelBuilt ? 1 : 0) + (level.pipes || []).filter((pipe) => pipe.built).length + (level.storageBuilt || 0);
+  return `${done}/${1 + pipes + 4}`;
+}
+
 function drawObjectives(ctx) {
-  const box = UI.objectives;
+  const box = objectiveBox();
   woodPanel(ctx, box.x, box.y, box.w, box.h, { fill: "rgba(42, 26, 15, 0.9)" });
   text(ctx, "OBJECTIVES:", box.x + 14, box.y + 28, { size: 18, weight: 700 });
-  const p = progress();
-  [
-    ["Fill Water Drum", p.water],
-    ["Till Soil", p.till],
-    ["Build Wooden Fence", p.fence],
-  ].forEach(([label, value], index) => {
+  objectiveRows().forEach(([label, value], index) => {
     const y = box.y + 54 + index * 34;
     const done = value >= 1;
     text(ctx, `- ${label}: ${Math.round(value * 100)}%`, box.x + 14, y, { size: 15, color: done ? "#9be37a" : "#f3e6c8" });
@@ -180,8 +190,8 @@ function drawGear(ctx) {
 }
 
 function drawSlots(ctx, app) {
-  const tools = { ade: "bucket", mei: "hoe", eli: "axe" };
-  UI.slots.forEach((slot, index) => {
+  const tools = level.id === 2 ? { eli: "axe", mei: "hoe", ade: "hammer" } : { ade: "bucket", mei: "hoe", eli: "axe" };
+  slots().forEach((slot, index) => {
     const entry = unit(slot.id);
     woodPanel(ctx, slot.x, slot.y, slot.w, slot.h, {
       fill: entry.selected ? "rgba(120, 76, 30, 0.95)" : "rgba(52, 31, 18, 0.92)",
@@ -197,7 +207,7 @@ function drawSlots(ctx, app) {
       ctx.fill();
     }
   });
-  const hovered = UI.slots.find((slot) => inside(app.pointer, slot));
+  const hovered = slots().find((slot) => inside(app.pointer, slot));
   if (hovered) {
     const entry = unit(hovered.id);
     const label = `${entry.name} · ${entry.role}`;
@@ -224,7 +234,7 @@ function drawCard(ctx) {
   if (!entry) {
     text(ctx, "?", frame.x + 50, frame.y + 66, { size: 46, align: "center", weight: 700, color: "#dfe9f3" });
     text(ctx, "No farmer selected", box.x + 124, box.y + 40, { size: 19, weight: 700 });
-    text(ctx, "Click a farmer, or press", box.x + 124, box.y + 68, { size: 14, color: "#d8c8a8" });
+    text(ctx, "Click a farmer, then send help", box.x + 124, box.y + 68, { size: 14, color: "#d8c8a8" });
     text(ctx, "1, 2 or 3.", box.x + 124, box.y + 88, { size: 14, color: "#d8c8a8" });
     return;
   }
@@ -294,7 +304,7 @@ function tooltip(ctx, value, x, y, options = {}) {
 }
 
 function drawHints(ctx, app, project) {
-  HINTS.forEach((hint) => {
+  activeHints().forEach((hint) => {
     const state = (level.hints[hint.id] ||= { shown: -1, gone: -1 });
     if (state.shown < 0 && hint.show() && !hint.done()) state.shown = level.elapsed;
     if (state.shown >= 0 && state.gone < 0 && hint.done()) state.gone = level.elapsed;
@@ -397,7 +407,7 @@ function drawBox(ctx, app) {
 }
 
 export function drawHUD(ctx, app, time, project) {
-  ctx.fillStyle = `rgba(255, 140, 40, ${0.1 * Math.min(1, level.elapsed / DURATION)})`;
+  ctx.fillStyle = `rgba(255, 140, 40, ${0.1 * Math.min(1, level.elapsed / (level.duration || DURATION))})`;
   ctx.fillRect(0, 0, VIEW.w, VIEW.h);
   drawVignette(ctx, time);
   drawHints(ctx, app, project);
@@ -426,19 +436,26 @@ function dim(ctx, alpha = 0.55) {
 function drawIntro(ctx) {
   dim(ctx, 0.5);
   parchment(ctx, 330, 96, 620, 540);
-  text(ctx, "Level 1 · Drought Prep", 640, 158, { size: 32, weight: 700, align: "center", color: "#4a2a10", shadow: false });
-  text(ctx, `A drought hits in ${formatClock(DURATION)}. Get the farm ready.`, 640, 192, {
+  const levelTwo = level.id === 2;
+  text(ctx, levelTwo ? "Level 2 · Hold the River" : "Level 1 · Drought Prep", 640, 158, { size: 32, weight: 700, align: "center", color: "#4a2a10", shadow: false });
+  text(ctx, levelTwo ? `Irrigate and plant before the drought in ${formatClock(level.duration)}.` : `A drought hits in ${formatClock(DURATION)}. Get the farm ready.`, 640, 192, {
     size: 18,
     align: "center",
     color: "#6a4422",
     shadow: false,
   });
-  const jobs = {
-    ade: "Find buckets, then keep the drum filling.",
-    mei: "Till every patch of the soil plot.",
-    eli: "Chop trees, then fence in the soil.",
-  };
-  CREW_ORDER.forEach((id, index) => {
+  const jobs = levelTwo
+    ? {
+        eli: "Push into the deep woods and stockpile lumber.",
+        mei: "Cut a channel through every tilled plot.",
+        ade: "Site the wheel, lay pipes, and build storage.",
+      }
+    : {
+        ade: "Find buckets, then keep the drum filling.",
+        mei: "Till every patch of the soil plot.",
+        eli: "Chop trees, then fence in the soil.",
+      };
+  crewOrder().forEach((id, index) => {
     const y = 226 + index * 96;
     const crew = CREW[id];
     roundedRect(ctx, 380, y, 80, 80, 6);
@@ -457,11 +474,19 @@ function drawIntro(ctx) {
       ctx.drawImage(face, 420 - (face.width * scale) / 2, y + 80 - face.height * scale, face.width * scale, face.height * scale);
       ctx.restore();
     }
-    text(ctx, crew.name, 480, y + 28, { size: 24, weight: 700, color: "#3a2210", shadow: false });
+    text(ctx, `${index + 1}  ${crew.name}`, 480, y + 28, { size: 24, weight: 700, color: "#3a2210", shadow: false });
     text(ctx, crew.role, 480, y + 50, { size: 16, color: "#2a6aa8", shadow: false });
     text(ctx, jobs[id], 480, y + 72, { size: 16, color: "#5a3a1c", shadow: false });
   });
-  text(ctx, "Click a farmer, then click a spot or task. Drag to pan. Scroll to zoom.", 640, 536, {
+  if (levelTwo) {
+    text(ctx, "Then all three of you plant the seeds together.", 640, 516, {
+      size: 15,
+      align: "center",
+      color: "#6a4422",
+      shadow: false,
+    });
+  }
+  text(ctx, "Click a farmer, then a task. Click another working farmer to help them. Drag to pan.", 640, levelTwo ? 542 : 536, {
     size: 15,
     align: "center",
     color: "#6a4422",
@@ -483,7 +508,7 @@ function drawResult(ctx, app) {
   const won = app.screen === "won";
   dim(ctx, 0.5);
   parchment(ctx, 420, 170, 440, 380);
-  text(ctx, won ? "Farm Ready!" : "The Drought Hit", 640, 232, {
+  text(ctx, won ? (level.id === 2 ? "Fields Are In!" : "Farm Ready!") : "The Drought Hit", 640, 232, {
     size: 36,
     weight: 700,
     align: "center",
@@ -502,7 +527,7 @@ function drawResult(ctx, app) {
     });
     text(ctx, `includes +${level.timeBonus} for time left`, 640, 372, { size: 15, align: "center", color: "#6a4422", shadow: false });
   } else {
-    text(ctx, "The ground hardened before the farm was ready.", 640, 282, { size: 16, align: "center", color: "#5a3a1c", shadow: false });
+    text(ctx, level.id === 2 ? "The drought arrived before the fields were planted." : "The ground hardened before the farm was ready.", 640, 282, { size: 16, align: "center", color: "#5a3a1c", shadow: false });
     text(ctx, `Score ${level.score.toLocaleString("en-US")}`, 640, 322, {
       size: 24,
       weight: 700,
@@ -511,13 +536,8 @@ function drawResult(ctx, app) {
       shadow: false,
     });
   }
-  const p = progress();
-  [
-    ["Water drum", p.water],
-    ["Soil tilled", p.till],
-    ["Fence built", p.fence],
-  ].forEach(([label, value], index) => {
-    const y = 404 + index * 22;
+  objectiveRows().forEach(([label, value], index) => {
+    const y = (level.id === 2 ? 396 : 404) + index * (level.id === 2 ? 16 : 22);
     text(ctx, label, 470, y, { size: 16, color: "#4a2a10", shadow: false });
     bar(ctx, 600, y - 11, 160, 10, value, value >= 1 ? "#4caf3a" : "#3d8be0");
     text(ctx, `${Math.round(value * 100)}%`, 810, y, { size: 16, align: "right", color: "#4a2a10", shadow: false });
@@ -545,7 +565,7 @@ export function drawMenu(ctx, app, time) {
   ctx.stroke();
   ctx.setLineDash([]);
   UI.levelNodes.forEach((node) => {
-    const open = node.n === 1;
+    const open = node.n === 1 || (node.n === 2 && app.unlocked >= 2);
     const pulse = open ? Math.sin(time * 4) * 3 : 0;
     ctx.beginPath();
     ctx.arc(node.x, node.y, 30 + pulse, 0, Math.PI * 2);
@@ -559,13 +579,12 @@ export function drawMenu(ctx, app, time) {
     ctx.lineWidth = 3;
     ctx.stroke();
     if (open) {
-      text(ctx, "1", node.x, node.y + 10, { size: 28, weight: 700, align: "center", color: "#3a2210", shadow: false });
-      [0, 1, 2].forEach((index) => icon(ctx, index < app.best ? "star" : "star-empty", node.x - 36 + index * 24, node.y + 30, 22));
+      text(ctx, String(node.n), node.x, node.y + 10, { size: 28, weight: 700, align: "center", color: "#3a2210", shadow: false });
+      const stars = node.n === 2 ? app.best2 || 0 : app.best;
+      [0, 1, 2].forEach((index) => icon(ctx, index < stars ? "star" : "star-empty", node.x - 36 + index * 24, node.y + 30, 22));
     } else icon(ctx, "lock", node.x - 13, node.y - 13, 26);
   });
-  UI.menuButtons.forEach((entry) => {
-    button(ctx, entry, entry.id === "sound" ? "Audio" : entry.label, { dim: entry.id !== "sound", size: 16 });
-  });
+  UI.menuButtons.forEach((entry) => button(ctx, entry, entry.label, { size: 16 }));
   drawToast(ctx, app);
   if (app.audioPanel) drawAudioPanel(ctx, app);
 }
