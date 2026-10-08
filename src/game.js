@@ -37,6 +37,9 @@ export function unlockedMax() {
   try {
     stored = Number(localStorage.getItem(UNLOCK_KEY)) || 1;
     extra = Number(new URLSearchParams(globalThis.location?.search || "").get("unlock")) || 0;
+    const finishedOne = Number(localStorage.getItem("greenfield-stars")) > 0 || Number(localStorage.getItem("greenfield-score")) > 0;
+    if (finishedOne) stored = Math.max(stored, 2);
+    if (stored >= 2 && !localStorage.getItem(UNLOCK_KEY)) localStorage.setItem(UNLOCK_KEY, "2");
   } catch {
     stored = 1;
   }
@@ -44,7 +47,7 @@ export function unlockedMax() {
 }
 
 function noteVictory() {
-  if (level.id !== 1) return;
+  if (level.id && level.id !== 1) return;
   try {
     localStorage.setItem(UNLOCK_KEY, String(Math.max(2, Number(localStorage.getItem(UNLOCK_KEY)) || 1)));
   } catch {
@@ -999,7 +1002,7 @@ function riverShore(c, r) {
 
 function targetAtLevel2(x, y) {
   const sack = tileCenter(W.SEED_SACK.c, W.SEED_SACK.r);
-  if (Math.hypot(x - sack.x, y - sack.y) < 36) return { type: "seeds" };
+  if (Math.hypot(x - sack.x, y - sack.y) < 26) return { type: "seeds" };
   const wheel = tileCenter(W.WHEEL_NODE.c, W.WHEEL_NODE.r);
   if (Math.hypot(x - wheel.x, y - wheel.y) < 36) return { type: "wheel" };
   if (
@@ -1027,12 +1030,18 @@ function targetAtLevel2(x, y) {
 
 function describeLevel2(target, group) {
   const has = (id) => group.some((entry) => entry.id === id);
+  const specialist = specialistFor(target);
+  const canJoin = specialist && !has(specialist.id) && isWorking(specialist);
   switch (target.type) {
     case "tree":
-      return has("eli") ? { label: "Harvest deep-wood lumber", ok: true } : { label: "Eli stocks the lumber", ok: false };
+      if (has("eli")) return { label: "Harvest deep-wood lumber", ok: true };
+      if (canJoin) return { label: `Help ${specialist.name} harvest lumber`, ok: true };
+      return { label: "Eli stocks the lumber", ok: false };
     case "plot":
       if (!channelsDone()) {
-        return has("mei") ? { label: target.cell.trenched ? "Dig the next channel" : "Dig an irrigation channel", ok: true } : { label: "Mei digs the channels", ok: false };
+        if (has("mei")) return { label: target.cell.trenched ? "Dig the next channel" : "Dig an irrigation channel", ok: true };
+        if (canJoin) return { label: `Help ${specialist.name} trench`, ok: true };
+        return { label: "Mei digs the channels", ok: false };
       }
       if (target.cell.planted) return { label: "Already planted", ok: false };
       if (!canPlant()) return { label: plantBlocker(), ok: false };
@@ -1041,16 +1050,19 @@ function describeLevel2(target, group) {
       if (!canPlant()) return { label: plantBlocker(), ok: false };
       return group.length === 3 ? { label: "Plant the seeds together", ok: true } : { label: "All three must plant together", ok: false };
     case "wheel":
+      if (canJoin) return { label: `Help ${specialist.name} on the wheel`, ok: true };
       if (!has("ade")) return { label: "Ade sites the water wheel", ok: false };
       if (level.wheelBuilt) return { label: "Water wheel is turning", ok: false };
       if (!level.seen.wheel) return { label: "Mark the wheel site", ok: true };
       return { label: level.wood >= L2_WHEEL_COST ? "Build the water wheel" : `Needs ${L2_WHEEL_COST} wood`, ok: level.wood >= L2_WHEEL_COST };
     case "pipe":
+      if (canJoin) return { label: `Help ${specialist.name} lay pipe`, ok: true };
       if (!has("ade")) return { label: "Ade lays the pipes", ok: false };
       if (!level.wheelBuilt) return { label: "Build the wheel first", ok: false };
       if (level.pipes.every((pipe) => pipe.built)) return { label: "Pipes are connected", ok: false };
       return { label: level.wood >= L2_PIPE_COST ? "Lay the next pipe" : `Needs ${L2_PIPE_COST} wood`, ok: level.wood >= L2_PIPE_COST };
     case "storage":
+      if (canJoin) return { label: `Help ${specialist.name} assemble storage`, ok: true };
       if (!has("ade")) return { label: "Ade builds the storage", ok: false };
       if (!level.pipes.every((pipe) => pipe.built)) return { label: "Finish the pipeline first", ok: false };
       if (level.storageBuilt >= W.STORAGE_TILES.length) return { label: "Storage tanks are up", ok: false };
@@ -1131,22 +1143,102 @@ function moveTo(entry, x, y, offset = 0) {
   }, exact);
 }
 
+function isWorking(entry) {
+  return Boolean(entry && entry.task && !["idle", "walk", "assist"].includes(entry.task));
+}
+
+function leadOf(entry) {
+  if (entry?.task === "assist" && entry.helping) return unit(entry.helping) || entry;
+  return entry;
+}
+
+export function canHelp(entry) {
+  const leader = leadOf(entry);
+  return Boolean(leader && isWorking(leader));
+}
+
+export function sendHelp(group, target) {
+  const leader = leadOf(target);
+  const helpers = group.filter((entry) => entry.id !== leader?.id);
+  if (!leader || !helpers.length) return false;
+  if (leader.task === "plant") {
+    helpers.forEach((entry) => {
+      const tile = tileAt(leader.x, leader.y);
+      clearTask(entry);
+      entry.task = "plant";
+      walkTo(entry, [[tile.c, tile.r]], () => {
+        entry.task = "plant";
+      });
+    });
+    if (level.units.every((entry) => entry.task === "plant")) {
+      level.planting = true;
+      say("The whole crew is planting together.");
+    } else say(`${helpers.map((entry) => entry.name).join(" and ")} joined the planting.`);
+    return true;
+  }
+  helpers.forEach((entry, index) => goAssist(entry, leader, { x: leader.x, y: leader.y }, index + 1));
+  say(`${helpers.map((entry) => entry.name).join(" and ")} ${helpers.length > 1 ? "are" : "is"} helping ${leader.name}.`);
+  return true;
+}
+
+function specialistFor(target) {
+  if (target.type === "tree") return unit("eli");
+  if (target.type === "buckets" || target.type === "water" || target.type === "drum") return unit("ade");
+  if (target.type === "wheel" || target.type === "pipe" || target.type === "storage" || target.type === "bank") return unit("ade");
+  if (target.type === "seeds") return level.units.find((entry) => entry.task === "plant") || null;
+  if (target.type === "plot") {
+    const mei = unit("mei");
+    const eli = unit("eli");
+    if (level.id === 2) {
+      if (channelsDone() && level.units.some((entry) => entry.task === "plant")) return level.units.find((entry) => entry.task === "plant");
+      return mei;
+    }
+    if (isWorking(mei) && mei.task === "till") return mei;
+    if (isWorking(eli) && eli.task === "build") return eli;
+    if (tilledCount() < level.cells.length) return mei;
+    return eli;
+  }
+  return null;
+}
+
 function goAssist(entry, leader, point, offset) {
   clearTask(entry);
   entry.task = "assist";
   entry.helping = leader.id;
   const angle = offset * 2.4;
-  const tx = point.x + Math.cos(angle) * 42;
-  const ty = point.y + Math.sin(angle) * 20;
+  const tx = (point?.x ?? leader.x) + Math.cos(angle) * 42;
+  const ty = (point?.y ?? leader.y) + Math.sin(angle) * 20;
   const tile = tileAt(tx, ty);
   const goal = W.nearestWalkable(tile.c, tile.r);
   if (!goal) return;
-  walkTo(entry, [goal], () => {
-    entry.task = "assist";
-    entry.helping = leader.id;
-    face(entry, leader.x);
-    entry.bubble = { text: `Helping ${leader.name}!`, life: 2.4 };
-  });
+  walkTo(
+    entry,
+    [goal],
+    () => {
+      entry.task = "assist";
+      entry.helping = leader.id;
+      face(entry, leader.x);
+      entry.bubble = { text: `Helping ${leader.name}!`, life: 2.4 };
+    },
+    { x: tx, y: ty },
+    true,
+  );
+}
+
+function keepHelping(entry, dt) {
+  const leader = unit(entry.helping);
+  if (!leader || ["idle", "assist"].includes(leader.task || "idle")) {
+    entry.helping = null;
+    entry.task = "idle";
+    return;
+  }
+  const distance = Math.hypot(leader.x - entry.x, leader.y - entry.y);
+  if (distance > 86) {
+    if (!entry.path.length) goAssist(entry, leader, { x: leader.x, y: leader.y }, 1);
+    return;
+  }
+  face(entry, leader.x);
+  entry.walkClock += dt;
 }
 
 function treeAt(x, y) {
@@ -1176,26 +1268,37 @@ export function targetAt(x, y) {
 }
 
 export function describe(target, group) {
+  if (target.type === "help") return { label: `Help ${target.leader.name}`, ok: true };
   if (level.id === 2) return describeLevel2(target, group);
   const has = (id) => group.some((entry) => entry.id === id);
   const ade = group.find((entry) => entry.id === "ade");
+  const specialist = specialistFor(target);
+  const canJoin = specialist && !has(specialist.id) && isWorking(specialist);
   switch (target.type) {
     case "buckets":
+      if (canJoin) return { label: `Help ${specialist.name} with the buckets`, ok: true };
       return has("ade") ? { label: ade.bucket ? "Ade has a bucket" : "Pick up a bucket", ok: !ade.bucket } : { label: "Ade handles buckets", ok: false };
     case "water":
+      if (canJoin) return { label: `Help ${specialist.name} fetch water`, ok: true };
       if (!has("ade")) return { label: "Only Ade carries water", ok: false };
       if (!ade.bucket) return { label: "Needs a bucket first", ok: false };
       return level.drum < 100 ? { label: "Start the water run", ok: true } : { label: "The drum is full", ok: false };
     case "drum":
+      if (canJoin) return { label: `Help ${specialist.name} fill the drum`, ok: true };
       if (!has("ade")) return { label: `Water drum ${level.drum}%`, ok: false };
       if (!ade.bucket) return { label: "Needs a bucket first", ok: false };
       if (!level.seen.water && ade.bucket !== "full") return { label: "Find the water first", ok: false };
       return { label: "Start the water run", ok: level.drum < 100 };
     case "tree":
-      return has("eli") ? { label: "Chop this tree", ok: true } : { label: "Eli has the axe", ok: false };
+      if (has("eli")) return { label: "Chop this tree", ok: true };
+      if (canJoin) return { label: `Help ${specialist.name} chop`, ok: true };
+      return { label: "Eli has the axe", ok: false };
     case "plot":
       if (has("mei")) return { label: target.cell.tilled ? "Till the next patch" : "Till the soil", ok: tilledCount() < level.cells.length };
-      if (has("eli")) return { label: level.wood >= FENCE_COST ? "Build the fence" : "Needs wood to fence", ok: level.wood >= FENCE_COST };
+      if (has("eli") && (!has("mei") || tilledCount() >= level.cells.length)) {
+        return { label: level.wood >= FENCE_COST ? "Build the fence" : "Needs wood to fence", ok: level.wood >= FENCE_COST };
+      }
+      if (canJoin) return { label: `Help ${specialist.name}`, ok: true };
       return { label: "Walk here", ok: true };
     default:
       return { label: "Walk here", ok: true };
@@ -1203,6 +1306,15 @@ export function describe(target, group) {
 }
 
 export function order(group, target, point) {
+  if (target.type === "help") {
+    sendHelp(group, target.leader);
+    return;
+  }
+  const specialist = specialistFor(target);
+  if (specialist && !group.some((entry) => entry.id === specialist.id) && isWorking(specialist)) {
+    sendHelp(group, specialist);
+    return;
+  }
   if (level.id === 2) {
     orderLevel2(group, target, point);
     return;
@@ -1289,6 +1401,13 @@ export function taskLabel(entry) {
 }
 
 export function equippedLabel(entry) {
+  if (level.id === 2) {
+    if (entry.id === "eli") return level.wood ? `Axe, ${level.wood} wood` : "Axe";
+    if (entry.id === "mei") return "Trenching hoe";
+    if (level.wheelBuilt) return "Wheel crank";
+    if (level.seen.wheel) return "Wheel site marked";
+    return "Survey kit";
+  }
   if (entry.id === "ade") return entry.bucket === "full" ? "Full Bucket" : entry.bucket === "empty" ? "Empty Bucket" : "Nothing yet";
   if (entry.id === "mei") return "Hoe";
   return level.wood ? `Axe, ${level.wood} wood` : "Axe";
@@ -1296,6 +1415,7 @@ export function equippedLabel(entry) {
 
 function updateUnit(entry, dt) {
   entry.hop = Math.max(0, entry.hop - dt * 3);
+  if (entry.task === "assist" && !entry.path.length) keepHelping(entry, dt);
   if (entry.path.length) {
     const next = entry.path[0];
     const dx = next.x - entry.x;
@@ -1332,7 +1452,8 @@ function updateUnit(entry, dt) {
       action.tree.shake = 1;
       burst(action.tree.x, action.tree.y - 18, 5, ["#d9a86a", "#f0cf98", "#8a5a32"], { lift: 80, speed: 70 });
     }
-    if (action.kind === "till" && action.cell) burst(action.cell.x, action.cell.y, 4, ["#4a2e18", "#6b4628"], { lift: 50 });
+    if ((action.kind === "till" || action.kind === "trench") && action.cell) burst(action.cell.x, action.cell.y, 4, ["#4a2e18", "#6b4628"], { lift: 50 });
+    if (action.kind === "pipe" && action.pipe) burst(action.pipe.x, action.pipe.y, 3, ["#c5d0d8", "#8aa0ae"], { lift: 30 });
     if (action.kind === "build" && action.segment) {
       const s = action.segment;
       burst((s.a.x + s.b.x) / 2, (s.a.y + s.b.y) / 2 - 10, 3, ["#c8945a", "#e8c48a"], { lift: 40 });
@@ -1376,6 +1497,15 @@ function updateCows(dt) {
 }
 
 function discover() {
+  if (level.id === 2) {
+    level.units.forEach((entry) => reveal(entry.x, entry.y, 230));
+    const wheel = tileCenter(W.WHEEL_NODE.c, W.WHEEL_NODE.r);
+    if (!level.seen.wheel && level.units.some((entry) => Math.hypot(entry.x - wheel.x, entry.y - wheel.y) < 150)) {
+      level.seen.wheel = true;
+      say("Solid ground. This is the water-wheel site.");
+    }
+    return;
+  }
   level.units.forEach((entry) => reveal(entry.x, entry.y, 250));
   const buckets = bucketSpot();
   if (!level.seen.buckets && level.units.some((entry) => Math.hypot(entry.x - buckets.x, entry.y - buckets.y) < 190)) {
@@ -1405,6 +1535,8 @@ export function updateLevel(dt) {
   }
   if (level.warningClock >= 0) level.warningClock += dt;
   level.units.forEach((entry) => updateUnit(entry, dt));
+  updatePlanting(dt);
+  updateReserve(dt);
   updateCallouts(dt);
   updateCows(dt);
   discover();
@@ -1428,12 +1560,16 @@ export function updateLevel(dt) {
     cloud.x += dt * 14;
     if (cloud.x - cloud.size * 2 > WORLD.w) cloud.x = -cloud.size * 2;
   });
-  const p = progress();
-  if (p.water >= 1 && p.till >= 1 && p.fence >= 1) {
+  const won =
+    level.id === 2
+      ? level.cells.every((cell) => cell.planted) && channelsDone() && worksDone()
+      : progress().water >= 1 && progress().till >= 1 && progress().fence >= 1;
+  if (won) {
     level.status = "won";
     level.timeBonus = Math.round(level.time * 12);
     level.score += level.timeBonus;
-    level.stars = level.time >= 60 ? 3 : level.time >= 25 ? 2 : 1;
+    level.stars = level.id === 2 ? (level.time >= 70 ? 3 : level.time >= 30 ? 2 : 1) : level.time >= 60 ? 3 : level.time >= 25 ? 2 : 1;
+    noteVictory();
   } else if (level.time <= 0) level.status = "lost";
 }
 
@@ -1554,7 +1690,12 @@ export function renderWorld(ctx, view, time, options = {}) {
     ctx.globalAlpha = cell.tilled ? 1 : cell.progress;
     ctx.drawImage(tilled, top.x - 32, top.y, 64, 32);
     ctx.globalAlpha = 1;
+    if (level.id === 2 && (cell.trenched || cell.planted)) drawTrench(ctx, cell);
   });
+  if (level.id === 2) {
+    drawPipes(ctx, time);
+    drawWheelWorks(ctx, time);
+  }
 
   sparkles.forEach((spark) => {
     const glow = Math.sin(time * 2.2 + spark.phase);
@@ -1564,7 +1705,7 @@ export function renderWorld(ctx, view, time, options = {}) {
   });
 
   const selected = level.units.filter((entry) => entry.selected);
-  const showGhost = selected.some((entry) => entry.id === "eli") || level.wood >= FENCE_COST || builtCount() > 0;
+  const showGhost = level.id !== 2 && (selected.some((entry) => entry.id === "eli") || level.wood >= FENCE_COST || builtCount() > 0);
   if (showGhost) level.fence.forEach((segment) => !segment.built && drawGhostFence(ctx, segment, time));
 
   if (options.hover) {
@@ -1579,6 +1720,10 @@ export function renderWorld(ctx, view, time, options = {}) {
     if (target.type === "buckets") spot = { ...bucketSpot(), w: 80 };
     if (target.type === "drum") spot = { ...drumSpot(), w: 74 };
     if (target.type === "plot") spot = { x: target.cell.x, y: target.cell.y, w: 64 };
+    if (target.type === "wheel") spot = { ...tileCenter(W.WHEEL_NODE.c, W.WHEEL_NODE.r), w: 70 };
+    if (target.type === "storage") spot = { ...tileCenter(W.STORAGE_TILES[0][0], W.STORAGE_TILES[0][1]), w: 78 };
+    if (target.type === "pipe" && target.pipe) spot = { x: target.pipe.x, y: target.pipe.y, w: 48 };
+    if (target.type === "seeds") spot = { ...tileCenter(W.SEED_SACK.c, W.SEED_SACK.r), w: 56 };
     if (spot) {
       diamond(ctx, spot.x, spot.y, spot.w, spot.w / 2);
       ctx.stroke();
@@ -1703,6 +1848,15 @@ export function renderWorld(ctx, view, time, options = {}) {
     });
   });
 
+  if (level.id === 2) {
+    W.STORAGE_TILES.forEach(([c, r], index) => {
+      const point = tileCenter(c, r);
+      push(point.y, point.x, () => drawTank(ctx, point, index < level.storageBuilt), 80);
+    });
+    const sack = tileCenter(W.SEED_SACK.c, W.SEED_SACK.r);
+    if (level.cells.some((cell) => !cell.planted)) push(sack.y, sack.x, () => drawSeedSack(ctx, sack), 80);
+  }
+
   level.paddockFence.forEach((segment) => push(segment.y, segment.a.x, () => drawFence(ctx, segment), 120));
   level.fence.forEach((segment) => {
     if (segment.built) push(segment.y, segment.a.x, () => drawFence(ctx, segment), 120);
@@ -1802,6 +1956,198 @@ export function renderWorld(ctx, view, time, options = {}) {
   });
   ctx.globalAlpha = 1;
 }
+
+function drawTrench(ctx, cell) {
+  const mid = toWorld(cell.c + 0.5, cell.r + 0.5);
+  const west = toWorld(cell.c + 0.18, cell.r + 0.5);
+  const east = toWorld(cell.c + 0.82, cell.r + 0.5);
+  const north = toWorld(cell.c + 0.5, cell.r + 0.18);
+  const south = toWorld(cell.c + 0.5, cell.r + 0.82);
+  ctx.strokeStyle = cell.planted ? "#2f6a32" : level.reserve > 0 ? "#3c92d4" : "#24160e";
+  ctx.lineWidth = 3;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(west.x, west.y);
+  ctx.lineTo(east.x, east.y);
+  ctx.moveTo(north.x, north.y);
+  ctx.lineTo(south.x, south.y);
+  ctx.stroke();
+  if (!cell.planted) return;
+  ctx.fillStyle = "#7ed05a";
+  [
+    [-8, -6],
+    [7, -3],
+    [0, 2],
+  ].forEach(([dx, dy]) => {
+    ctx.beginPath();
+    ctx.ellipse(mid.x + dx, mid.y + dy - 6, 3.2, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function drawPipes(ctx, time) {
+  if (!level.pipes?.length) return;
+  const wheel = tileCenter(W.WHEEL_NODE.c, W.WHEEL_NODE.r);
+  let cursor = wheel;
+  const showGhost = level.wheelBuilt && (level.units.some((entry) => entry.selected && entry.id === "ade") || level.pipes.some((pipe) => pipe.built));
+  level.pipes.forEach((pipe) => {
+    ctx.save();
+    ctx.lineCap = "round";
+    if (pipe.built) {
+      ctx.strokeStyle = "#24343c";
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      ctx.moveTo(cursor.x, cursor.y - 8);
+      ctx.lineTo(pipe.x, pipe.y - 8);
+      ctx.stroke();
+      ctx.strokeStyle = "#9eb4c2";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cursor.x, cursor.y - 10);
+      ctx.lineTo(pipe.x, pipe.y - 10);
+      ctx.stroke();
+    } else if (showGhost) {
+      ctx.setLineDash([4, 5]);
+      ctx.lineDashOffset = -time * 10;
+      ctx.strokeStyle = "rgba(210, 226, 234, 0.55)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cursor.x, cursor.y - 6);
+      ctx.lineTo(pipe.x, pipe.y - 6);
+      ctx.stroke();
+    }
+    ctx.restore();
+    cursor = { x: pipe.x, y: pipe.y };
+  });
+  if (level.storageBuilt > 0 && level.pipes.every((pipe) => pipe.built)) {
+    const tank = tileCenter(W.STORAGE_TILES[W.STORAGE_TILES.length - 1][0], W.STORAGE_TILES[W.STORAGE_TILES.length - 1][1]);
+    ctx.strokeStyle = "#9eb4c2";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cursor.x, cursor.y - 10);
+    ctx.lineTo(tank.x, tank.y - 10);
+    ctx.stroke();
+  }
+}
+
+function drawWheelWorks(ctx, time) {
+  if (!level.wheelBuilt && !level.seen?.wheel) return;
+  const spot = tileCenter(W.WHEEL_NODE.c, W.WHEEL_NODE.r);
+  ctx.save();
+  ctx.translate(spot.x, spot.y - 26);
+  if (!level.wheelBuilt) {
+    ctx.setLineDash([5, 4]);
+    ctx.lineDashOffset = -time * 12;
+    ctx.strokeStyle = "rgba(255, 226, 150, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, 16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  ctx.fillStyle = "#5c3a1e";
+  ctx.fillRect(-16, 10, 8, 18);
+  ctx.fillRect(8, 10, 8, 18);
+  ctx.rotate(time * 1.7);
+  ctx.strokeStyle = "#e6c48a";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(0, 0, 14, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = "#8a5a32";
+  ctx.lineWidth = 3;
+  for (let spoke = 0; spoke < 6; spoke += 1) {
+    const angle = (spoke / 6) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(Math.cos(angle) * 20, Math.sin(angle) * 20);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawTank(ctx, point, built) {
+  shadow(ctx, point.x, point.y + 2, 16, 0.3);
+  ctx.fillStyle = built ? "#6e8494" : "rgba(90, 100, 110, 0.35)";
+  ctx.fillRect(point.x - 12, point.y - 28, 24, 26);
+  ctx.strokeStyle = built ? "#d5e2ea" : "rgba(220, 230, 236, 0.45)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(point.x - 12, point.y - 28, 24, 26);
+  if (!built) return;
+  const height = 22 * (level.reserve / 100);
+  ctx.fillStyle = "#3f92d6";
+  ctx.fillRect(point.x - 10, point.y - 4 - height, 20, height);
+}
+
+function drawSeedSack(ctx, point) {
+  shadow(ctx, point.x, point.y + 2, 12, 0.28);
+  ctx.fillStyle = "#c4a15a";
+  ctx.beginPath();
+  ctx.ellipse(point.x, point.y - 8, 12, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#8d6a32";
+  ctx.fillRect(point.x - 3, point.y - 20, 6, 8);
+  ctx.fillStyle = "#6faf45";
+  ctx.fillRect(point.x - 2, point.y - 12, 2, 2);
+  ctx.fillRect(point.x + 2, point.y - 10, 2, 2);
+}
+
+export function activeHints() {
+  return level.id === 2 ? HINTS_L2 : HINTS;
+}
+
+const HINTS_L2 = [
+  {
+    id: "woods",
+    text: "The timber for the wheel is deep in the north-west woods",
+    at: () => toWorld(12, 14),
+    show: () => level.elapsed > 0.8,
+    done: () => level.felled > 0,
+  },
+  {
+    id: "trench",
+    text: "Cut irrigation channels through the tilled soil",
+    at: () => toWorld(13, 24),
+    show: () => level.elapsed > 4,
+    done: () => level.cells.filter((cell) => cell.trenched).length >= 2,
+  },
+  {
+    id: "bank",
+    text: "Search the east riverbank for the wheel site",
+    at: () => toWorld(30, 16),
+    show: () => level.elapsed > 8 && !level.seen.wheel,
+    done: () => level.seen.wheel,
+  },
+  {
+    id: "wheel",
+    text: "Build the water wheel on the marked bank",
+    at: () => tileCenter(W.WHEEL_NODE.c, W.WHEEL_NODE.r),
+    show: () => level.seen.wheel && !level.wheelBuilt,
+    done: () => level.wheelBuilt,
+  },
+  {
+    id: "pipes",
+    text: "Lay pipes from the wheel toward the fields",
+    at: () => tileCenter(24, 18),
+    show: () => level.wheelBuilt && level.pipes.some((pipe) => !pipe.built),
+    done: () => level.pipes.every((pipe) => pipe.built),
+  },
+  {
+    id: "storage",
+    text: "Assemble storage tanks at the end of the pipeline",
+    at: () => tileCenter(16, 18),
+    show: () => level.pipes.every((pipe) => pipe.built) && level.storageBuilt < W.STORAGE_TILES.length,
+    done: () => level.storageBuilt >= W.STORAGE_TILES.length,
+  },
+  {
+    id: "plant",
+    text: "All three farmers plant the seeds together",
+    at: () => tileCenter(W.SEED_SACK.c, W.SEED_SACK.r),
+    show: () => canPlant() && level.cells.some((cell) => !cell.planted),
+    done: () => level.cells.every((cell) => cell.planted),
+  },
+];
 
 export const HINTS = [
   {
