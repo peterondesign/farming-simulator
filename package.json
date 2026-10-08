@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "python3 -m http.server 5173",
-    "sprites": "node scripts/generate-sprites.mjs"
+    "start": "node scripts/serve.mjs",
+    "sprites": "node scripts/generate-sprites.mjs",
+    "audio": "node scripts/generate-audio.mjs"
   }
 }
